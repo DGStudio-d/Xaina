@@ -8,10 +8,14 @@
     "scheme": "xaina",
     "userInterfaceStyle": "automatic",
     "newArchEnabled": true,
+    "updates": {
+      "enabled": false
+    },
     "ios": {
       "supportsTablet": true
     },
     "android": {
+      "package": "com.xaina.app",
       "adaptiveIcon": {
         "backgroundColor": "#E6F4FE",
         "foregroundImage": "./assets/images/android-icon-foreground.png",
@@ -38,8 +42,10 @@
             "backgroundColor": "#000000"
           }
         }
-      ]
+      ],
+      "expo-sqlite"
     ],
+    "assetBundlePatterns": ["assets/bundle/**"],
     "experiments": {
       "typedRoutes": true,
       "reactCompiler": true
