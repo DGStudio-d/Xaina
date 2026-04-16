@@ -1,0 +1,162 @@
+(function () {
+  'use strict';
+
+  const BASE = 'https://freewebnovel.com';
+
+  const sleep = ms => new Promise(r => setTimeout(r, ms));
+
+  async function fetchText(url, options = {}, retries = 3) {
+    try {
+      const res = await fetch(url, {
+        method: options.method || 'GET',
+        headers: {
+          'User-Agent': 'Mozilla/5.0',
+          'Referer': BASE + '/',
+          ...(options.headers || {})
+        },
+        body: options.body
+      });
+
+      if (res.status === 403 && retries > 0) {
+        await sleep(2000);
+        return fetchText(url, options, retries - 1);
+      }
+
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      return res.text();
+    } catch (err) {
+      if (retries > 0) {
+        await sleep(2000);
+        return fetchText(url, options, retries - 1);
+      }
+      throw err;
+    }
+  }
+
+  function parseHTML(html) {
+    return parse(html); // ✅ correct
+  }
+
+  function absoluteUrl(href) {
+    if (!href) return '';
+    return href.startsWith('http') ? href : BASE + href;
+  }
+
+  // ─── SEARCH ─────────────────────────────────────────────
+
+  async function search(query, maxPages = 3) {
+    const results = [];
+    const seen = new Set();
+
+    for (let page = 1; page <= maxPages; page++) {
+      let html;
+
+      if (query) {
+        html = await fetchText(`${BASE}/search/${page > 1 ? page : ''}`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+          body: `searchkey=${encodeURIComponent(query)}`
+        });
+      } else {
+        html = await fetchText(`${BASE}/latest-novel/${page > 1 ? page + '.html' : ''}`);
+      }
+
+      const root = parseHTML(html);
+
+      const items = root.querySelectorAll('.col-content .con .txt h3 a') || [];
+
+      if (items.length === 0) break;
+
+      items.forEach(el => {
+        const href = el.getAttribute('href');
+        const url = absoluteUrl(href);
+
+        if (url && !seen.has(url)) {
+          seen.add(url);
+
+          results.push({
+            id: href?.split('/novel/')[1]?.replace(/\//g, '') || '',
+            title: el.text.trim(),
+            url
+          });
+        }
+      });
+
+      await sleep(1500);
+    }
+
+    return results;
+  }
+
+  // ─── DETAIL ─────────────────────────────────────────────
+
+  async function getNovelDetail(url) {
+    const html = await fetchText(url);
+    const root = parseHTML(html);
+
+    const title = root.querySelector('h1.tit')?.text.trim();
+
+    const cover = root.querySelector('.m-imgtxt img')
+      ?.getAttribute('src');
+
+    const author = root.querySelector('.m-imgtxt a[href*="/author"]')
+      ?.text.trim();
+
+    const genres = [];
+    const genreNodes = root.querySelectorAll('.m-imgtxt a[href*="/genre"]') || [];
+
+    genreNodes.forEach(g => {
+      genres.push(g.text.trim());
+    });
+
+    const summary = root.querySelector('.m-desc')
+      ?.text.trim();
+
+    const bodyText = root.text.toLowerCase();
+
+    const status = bodyText.includes('ongoing')
+      ? 'ongoing'
+      : 'completed';
+
+    const language = root.querySelector('.m-imgtxt')
+      ?.text.includes('English')
+      ? 'English'
+      : 'Unknown';
+
+    const latestEl = root.querySelector('.m-nav a[href*="chapter-"]');
+
+    const latestChapter = latestEl
+      ? {
+          title: latestEl.text.trim(),
+          url: absoluteUrl(latestEl.getAttribute('href'))
+        }
+      : null;
+
+    const chapterLinks = root.querySelectorAll('.chapter-list a') || [];
+    const chapterCount = chapterLinks.length || null;
+
+    return {
+      id: url.split('/novel/')[1]?.replace(/\//g, ''),
+      title,
+      authors: author ? [author] : [],
+      genres,
+      status,
+      language,
+      description: summary,
+      chapter_count: chapterCount,
+      latest_chapter: latestChapter,
+      cover_url: cover,
+      novel_url: url
+    };
+  }
+
+  __xaina_register({
+    id: 'en.freewebnovel',
+    name: 'FreeWebNovel+',
+    version: '3.2.0',
+    baseUrl: BASE,
+    search,
+    getNovelDetail
+  });
+
+})();

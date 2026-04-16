@@ -1,6 +1,5 @@
 import { useTheme } from "@/hooks/use-theme";
 import { upsertNovel } from "@/lib/db";
-import type { Novel, SourceBundle } from "@/lib/extension-loader";
 import { Ionicons } from "@expo/vector-icons";
 import { Image } from "expo-image";
 import { useRouter } from "expo-router";
@@ -20,9 +19,9 @@ export default function BrowseScreen() {
   const router = useRouter();
   const { theme } = useTheme();
 
-  const [sources, setSources] = useState<SourceBundle[]>([]);
+  const [sources, setSources] = useState<[]>([]);
   const [activeId, setActiveId] = useState<string | null>(null);
-  const [novels, setNovels] = useState<Novel[]>([]);
+  const [novels, setNovels] = useState<[]>([]);
   const [query, setQuery] = useState("");
   const [page, setPage] = useState(1);
   const [hasNext, setHasNext] = useState(false);

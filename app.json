@@ -43,9 +43,12 @@
           }
         }
       ],
-      "expo-sqlite"
+      "expo-sqlite",
+      "expo-asset"
     ],
-    "assetBundlePatterns": ["assets/bundle/**"],
+    "assetBundlePatterns": [
+      "assets/bundle/**"
+    ],
     "experiments": {
       "typedRoutes": true,
       "reactCompiler": true

@@ -4,5 +4,6 @@ const config = getDefaultConfig(__dirname);
 
 // Treat .bundle files in assets/ as raw assets (not JS modules to parse)
 config.resolver.assetExts.push("bundle");
+config.resolver.assetExts.push("txt");
 
 module.exports = config;
