@@ -26,15 +26,7 @@ export default function TabLayout() {
           ),
         }}
       />
-      <Tabs.Screen
-        name="browse"
-        options={{
-          title: "Browse",
-          tabBarIcon: ({ color, size }) => (
-            <Ionicons name="search" size={size} color={color} />
-          ),
-        }}
-      />
+      <Tabs.Screen name="browse" options={{ href: null }} />
       <Tabs.Screen
         name="history"
         options={{
@@ -53,8 +45,15 @@ export default function TabLayout() {
           ),
         }}
       />
-      {/* Hide the old explore tab */}
-      <Tabs.Screen name="explore" options={{ href: null }} />
+      <Tabs.Screen
+        name="explore"
+        options={{
+          title: "Explore",
+          tabBarIcon: ({ color, size }) => (
+            <Ionicons name="compass" size={size} color={color} />
+          ),
+        }}
+      />
     </Tabs>
   );
 }

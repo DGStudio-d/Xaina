@@ -1,40 +1,60 @@
-import { getBundleCode, getInstalled, StoredExtension } from "@/core/extension/store";
+import { getBundleCode, getInstalled } from "@/core/extension/store";
 import { Extension } from "@/core/extension/types";
 import { runBundle } from "@/lib/DynamicExtensionRunner";
-import React, { createContext, useEffect } from "react";
+import React, { createContext, useContext, useEffect } from "react";
 
-export const initextension: Extension[] = [];
-export type ExtensionsAction={type:string,value:Extension}
-export const extensionReducer=(state:Extension[],action:ExtensionsAction)=>{
-    switch (action.type) {
-        case 'add':
-            return [...state, action.value]
-        default:
-            return state;
+export type ExtensionsAction =
+  | { type: "add"; value: Extension }
+  | { type: "reset"; value: Extension[] };
+
+export const extensionReducer = (
+  state: Extension[],
+  action: ExtensionsAction,
+): Extension[] => {
+  switch (action.type) {
+    case "add":
+      return [...state, action.value];
+    case "reset":
+      return action.value;
+    default:
+      return state;
+  }
+};
+
+const ExtensionContext = createContext<Extension[]>([]);
+const ExtensionDispatchContext =
+  createContext<React.Dispatch<ExtensionsAction> | null>(null);
+
+export const ExtensionProvider = ({
+  children,
+}: {
+  children: React.ReactNode;
+}) => {
+  const [extensions, dispatch] = React.useReducer(extensionReducer, []);
+
+  useEffect(() => {
+    const installed = getInstalled();
+    const loaded: Extension[] = [];
+    for (const ext of installed) {
+      const code = getBundleCode(ext.id);
+      if (code) loaded.push(runBundle(code));
     }
-}
+    dispatch({ type: "reset", value: loaded });
+  }, []);
 
-const ExtensionContext = createContext<Extension | null>(null);
-const ExtensionDispatchContext = createContext<React.Dispatch<ExtensionsAction> | null>(null);
-
-export const ExtensionProvider = ({ children }: { children: React.ReactNode}) => {
-    const installedExt:Extension[]=[]
-    useEffect(() => {
-        const extensionInstalled=getInstalled()
-
-        for(const ex in extensionInstalled) {
-            const code = getBundleCode(ex?.id)
-            const bundle=runBundle(code ? code:'')
-            installedExt.push(bundle)
-        }
-    }, [])
-    const [extension, dispatch] = React.useReducer(extensionReducer,installedExt );
-    
   return (
-    <ExtensionContext.Provider value={extension}>
+    <ExtensionContext.Provider value={extensions}>
       <ExtensionDispatchContext.Provider value={dispatch}>
         {children}
       </ExtensionDispatchContext.Provider>
     </ExtensionContext.Provider>
   );
 };
+
+export function useExtensions(): Extension[] {
+  return useContext(ExtensionContext);
+}
+
+export function useExtensionsDispatch() {
+  return useContext(ExtensionDispatchContext);
+}

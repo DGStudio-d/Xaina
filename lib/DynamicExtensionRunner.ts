@@ -13,15 +13,15 @@
  *   const ext = runBundle(source);
  *   ExtensionRegistry.register(ext);
  */
-import { Extension } from '@/core/extension/types';
 import type {
-  NovelResult,
-  NovelDetail,
-  ChapterResult,
-  ChapterContent,
-  SearchFilter,
-} from '@/core/extension/types';
-import parse from 'node-html-parser';
+    ChapterContent,
+    ChapterResult,
+    NovelDetail,
+    NovelResult,
+    SearchFilter,
+} from "@/core/extension/types";
+import { Extension } from "@/core/extension/types";
+import parse from "node-html-parser";
 
 /**
  * The API object a bundle must pass to __xaina_register().
@@ -30,15 +30,19 @@ import parse from 'node-html-parser';
 interface BundleAPI {
   id: string;
   name: string;
-  lang: string;
+  lang?: string;
   version: string;
   baseUrl: string;
   iconUrl?: string;
   nsfw?: boolean;
-  search(query: string, page: number, filters?: SearchFilter): Promise<NovelResult[]>;
+  search(
+    query: string,
+    page: number,
+    filters?: SearchFilter,
+  ): Promise<NovelResult[]>;
   getNovelDetail(url: string): Promise<NovelDetail>;
-  getChapters(novelUrl: string): Promise<ChapterResult[]>;
-  getChapterContent(chapterUrl: string): Promise<ChapterContent[]>;
+  getChapters?(novelUrl: string): Promise<ChapterResult[]>;
+  getChapterContent?(chapterUrl: string): Promise<ChapterContent[]>;
   getLatest?(page: number): Promise<NovelResult[]>;
   getPopular?(page: number): Promise<NovelResult[]>;
 }
@@ -60,22 +64,34 @@ class DynamicExtension extends Extension {
 
   constructor(api: BundleAPI) {
     super();
-    this.api     = api;
-    this.id      = api.id;
-    this.name    = api.name;
-    this.lang    = api.lang;
+    this.api = api;
+    this.id = api.id;
+    this.name = api.name;
+    this.lang = api.lang ?? api.id.split(".")[0] ?? "en";
     this.version = api.version;
     this.baseUrl = api.baseUrl;
     this.iconUrl = api.iconUrl;
-    this.nsfw    = api.nsfw ?? false;
+    this.nsfw = api.nsfw ?? false;
   }
 
-  search(q: string, page: number, filters?: SearchFilter)  { return this.api.search(q, page, filters); }
-  getNovelDetail(url: string)                               { return this.api.getNovelDetail(url); }
-  getChapters(novelUrl: string)                             { return this.api.getChapters(novelUrl); }
-  getChapterContent(chapterUrl: string)                     { return this.api.getChapterContent(chapterUrl); }
-  override getLatest(page: number)  { return this.api.getLatest?.(page) ?? super.getLatest(page); }
-  override getPopular(page: number) { return this.api.getPopular?.(page) ?? super.getPopular(page); }
+  search(q: string, page: number, filters?: SearchFilter) {
+    return this.api.search(q, page, filters);
+  }
+  getNovelDetail(url: string) {
+    return this.api.getNovelDetail(url);
+  }
+  getChapters(novelUrl: string) {
+    return this.api.getChapters?.(novelUrl) ?? Promise.resolve([]);
+  }
+  getChapterContent(chapterUrl: string) {
+    return this.api.getChapterContent?.(chapterUrl) ?? Promise.resolve([]);
+  }
+  override getLatest(page: number) {
+    return this.api.getLatest?.(page) ?? super.getLatest(page);
+  }
+  override getPopular(page: number) {
+    return this.api.getPopular?.(page) ?? super.getPopular(page);
+  }
 }
 
 /**
@@ -89,8 +105,10 @@ export function runBundle(source: string): Extension {
 
   // Sandbox: only expose what the bundle needs
   const sandbox = {
-    __xaina_register: (api: BundleAPI) => { registered = api; },
-    fetch,                          // native fetch
+    __xaina_register: (api: BundleAPI) => {
+      registered = api;
+    },
+    fetch, // native fetch
     console,
     setTimeout,
     clearTimeout,
@@ -120,7 +138,7 @@ export function runBundle(source: string): Extension {
   fn(...vals);
 
   if (!registered) {
-    throw new Error('Bundle did not call __xaina_register()');
+    throw new Error("Bundle did not call __xaina_register()");
   }
 
   return new DynamicExtension(registered);

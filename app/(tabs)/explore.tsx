@@ -1,112 +1,360 @@
-import { Image } from 'expo-image';
-import { Platform, StyleSheet } from 'react-native';
+import { useExtensions } from "@/context/extension-context";
+import { Extension, NovelResult } from "@/core/extension/types";
+import { useTheme } from "@/hooks/use-theme";
+import { upsertNovel } from "@/lib/db";
+import { Ionicons } from "@expo/vector-icons";
+import { Image } from "expo-image";
+import { useRouter } from "expo-router";
+import { useState } from "react";
+import {
+  ActivityIndicator,
+  FlatList,
+  Pressable,
+  StyleSheet,
+  Text,
+  TextInput,
+  View,
+} from "react-native";
 
-import { Collapsible } from '@/components/ui/collapsible';
-import { ExternalLink } from '@/components/external-link';
-import ParallaxScrollView from '@/components/parallax-scroll-view';
-import { ThemedText } from '@/components/themed-text';
-import { ThemedView } from '@/components/themed-view';
-import { IconSymbol } from '@/components/ui/icon-symbol';
-import { Fonts } from '@/constants/theme';
+type Screen = "list" | "novels";
 
-export default function TabTwoScreen() {
+export default function ExploreScreen() {
+  const router = useRouter();
+  const { theme } = useTheme();
+
+  const extensions = useExtensions();
+  const [screen, setScreen] = useState<Screen>("list");
+  const [activeExt, setActiveExt] = useState<Extension | null>(null);
+
+  // Novel browser state
+  const [novels, setNovels] = useState<NovelResult[]>([]);
+  const [query, setQuery] = useState("");
+  const [page, setPage] = useState(1);
+  const [hasNext, setHasNext] = useState(false);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  function openExtension(ext: Extension) {
+    setActiveExt(ext);
+    setNovels([]);
+    setQuery("");
+    setPage(1);
+    setError(null);
+    setScreen("novels");
+    // auto-load popular immediately
+    doLoadWith(ext, 1, "");
+  }
+
+  function goBack() {
+    setScreen("list");
+    setActiveExt(null);
+    setNovels([]);
+    setPage(1);
+    setError(null);
+  }
+
+  async function doLoadWith(ext: Extension, p: number, q: string) {
+    setLoading(true);
+    setError(null);
+    try {
+      const raw = q.trim() ? await ext.search(q, p) : await ext.getPopular(p);
+
+      // normalise — bundle returns a plain array, typed interface returns array too
+      const results: NovelResult[] = Array.isArray(raw) ? raw : [];
+
+      results.forEach((n) =>
+        upsertNovel({
+          id: n.id,
+          sourceId: n.sourceId ?? ext.id,
+          title: n.title,
+          author: (n as any).author ?? "",
+          cover: n.coverUrl ?? (n as any).cover_url ?? "",
+          coverLocal: null,
+          description: (n as any).description ?? "",
+          status: (n as any).status ?? "unknown",
+          genres: JSON.stringify((n as any).genres ?? []),
+          url: n.url,
+          inLibrary: 0,
+          favorite: 0,
+          lastReadChapter: null,
+          lastReadAt: null,
+          addedAt: null,
+        }),
+      );
+
+      setNovels((prev) => {
+        const combined = p === 1 ? results : [...prev, ...results];
+        const seen = new Set<string>();
+        return combined.filter((n) => {
+          if (!n.id || seen.has(n.id)) return false;
+          seen.add(n.id);
+          return true;
+        });
+      });
+      setHasNext(results.length >= 10);
+      setPage(p);
+    } catch (e: any) {
+      setError(e?.message ?? "Failed to load");
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  async function doLoad(p = 1, q = query) {
+    if (!activeExt) return;
+    await doLoadWith(activeExt, p, q);
+  }
+
+  const s = StyleSheet.create({
+    container: { flex: 1, backgroundColor: theme.background },
+    // Header
+    header: {
+      flexDirection: "row",
+      alignItems: "center",
+      paddingHorizontal: 16,
+      paddingTop: 52,
+      paddingBottom: 12,
+      backgroundColor: theme.surface,
+      borderBottomWidth: StyleSheet.hairlineWidth,
+      borderColor: theme.border,
+      gap: 10,
+    },
+    headerTitle: {
+      flex: 1,
+      color: theme.text,
+      fontSize: 20,
+      fontWeight: "700",
+    },
+    backBtn: { padding: 4 },
+    // Extension list
+    extCard: {
+      flexDirection: "row",
+      alignItems: "center",
+      padding: 16,
+      gap: 14,
+      borderBottomWidth: StyleSheet.hairlineWidth,
+      borderColor: theme.border,
+      backgroundColor: theme.card,
+    },
+    extIcon: {
+      width: 44,
+      height: 44,
+      borderRadius: 10,
+      backgroundColor: theme.surface,
+    },
+    extInfo: { flex: 1 },
+    extName: { color: theme.text, fontSize: 16, fontWeight: "600" },
+    extMeta: { color: theme.textMuted, fontSize: 12, marginTop: 2 },
+    extLang: {
+      backgroundColor: theme.primaryDark,
+      borderRadius: 4,
+      paddingHorizontal: 6,
+      paddingVertical: 2,
+      alignSelf: "flex-start",
+      marginTop: 4,
+    },
+    extLangText: { color: theme.primary, fontSize: 11, fontWeight: "600" },
+    // Empty state
+    empty: {
+      flex: 1,
+      alignItems: "center",
+      justifyContent: "center",
+      gap: 12,
+      paddingTop: 80,
+    },
+    emptyText: { color: theme.textMuted, fontSize: 15 },
+    emptyHint: { color: theme.textMuted, fontSize: 13 },
+    // Novel browser
+    searchRow: { flexDirection: "row", padding: 12, gap: 8 },
+    input: {
+      flex: 1,
+      backgroundColor: theme.surface,
+      color: theme.text,
+      borderRadius: 8,
+      paddingHorizontal: 14,
+      paddingVertical: 10,
+      fontSize: 15,
+      borderWidth: 1,
+      borderColor: theme.border,
+    },
+    searchBtn: {
+      backgroundColor: theme.primaryDark,
+      borderRadius: 8,
+      paddingHorizontal: 16,
+      justifyContent: "center",
+    },
+    searchBtnText: { color: theme.primary, fontWeight: "600" },
+    errorBar: {
+      flexDirection: "row",
+      alignItems: "center",
+      justifyContent: "space-between",
+      padding: 12,
+      backgroundColor: "#2a1a1a",
+    },
+    errorText: { color: theme.danger, fontSize: 13, flex: 1 },
+    retryText: { color: theme.primary, fontSize: 13, fontWeight: "600" },
+    card: {
+      flexDirection: "row",
+      padding: 12,
+      gap: 12,
+      borderBottomWidth: StyleSheet.hairlineWidth,
+      borderColor: theme.border,
+    },
+    cover: {
+      width: 60,
+      height: 90,
+      borderRadius: 6,
+      backgroundColor: theme.surface,
+    },
+    info: { flex: 1, justifyContent: "center", gap: 4 },
+    cardTitle: { color: theme.text, fontSize: 15, fontWeight: "600" },
+    cardAuthor: { color: theme.textSecondary, fontSize: 13 },
+    cardStatus: {
+      color: theme.primary,
+      fontSize: 11,
+      textTransform: "capitalize",
+    },
+  });
+
+  // ── Extension list screen ──────────────────────────────────────────────────
+  if (screen === "list") {
+    return (
+      <View style={s.container}>
+        <View style={s.header}>
+          <Text style={s.headerTitle}>Explore</Text>
+        </View>
+
+        {extensions.length === 0 ? (
+          <View style={s.empty}>
+            <Ionicons
+              name="extension-puzzle-outline"
+              size={48}
+              color={theme.border}
+            />
+            <Text style={s.emptyText}>No extensions installed</Text>
+            <Text style={s.emptyHint}>
+              Go to Settings → Extensions to install one
+            </Text>
+          </View>
+        ) : (
+          <FlatList
+            data={extensions}
+            keyExtractor={(e) => e.id}
+            renderItem={({ item }) => (
+              <Pressable style={s.extCard} onPress={() => openExtension(item)}>
+                <Image
+                  source={{ uri: item.iconUrl }}
+                  style={s.extIcon}
+                  contentFit="contain"
+                  cachePolicy="memory"
+                />
+                <View style={s.extInfo}>
+                  <Text style={s.extName}>{item.name}</Text>
+                  <Text style={s.extMeta}>{item.baseUrl}</Text>
+                  <View style={s.extLang}>
+                    <Text style={s.extLangText}>{item.lang.toUpperCase()}</Text>
+                  </View>
+                </View>
+                <Ionicons
+                  name="chevron-forward"
+                  size={18}
+                  color={theme.textMuted}
+                />
+              </Pressable>
+            )}
+          />
+        )}
+      </View>
+    );
+  }
+
+  // ── Novel browser screen ───────────────────────────────────────────────────
   return (
-    <ParallaxScrollView
-      headerBackgroundColor={{ light: '#D0D0D0', dark: '#353636' }}
-      headerImage={
-        <IconSymbol
-          size={310}
-          color="#808080"
-          name="chevron.left.forwardslash.chevron.right"
-          style={styles.headerImage}
+    <View style={s.container}>
+      <View style={s.header}>
+        <Pressable style={s.backBtn} onPress={goBack}>
+          <Ionicons name="arrow-back" size={22} color={theme.text} />
+        </Pressable>
+        <Text style={s.headerTitle} numberOfLines={1}>
+          {activeExt?.name}
+        </Text>
+      </View>
+
+      <View style={s.searchRow}>
+        <TextInput
+          style={s.input}
+          placeholder="Search novels..."
+          placeholderTextColor={theme.textMuted}
+          value={query}
+          onChangeText={setQuery}
+          onSubmitEditing={() => doLoad(1)}
+          returnKeyType="search"
         />
-      }>
-      <ThemedView style={styles.titleContainer}>
-        <ThemedText
-          type="title"
-          style={{
-            fontFamily: Fonts.rounded,
-          }}>
-          Explore
-        </ThemedText>
-      </ThemedView>
-      <ThemedText>This app includes example code to help you get started.</ThemedText>
-      <Collapsible title="File-based routing">
-        <ThemedText>
-          This app has two screens:{' '}
-          <ThemedText type="defaultSemiBold">app/(tabs)/index.tsx</ThemedText> and{' '}
-          <ThemedText type="defaultSemiBold">app/(tabs)/explore.tsx</ThemedText>
-        </ThemedText>
-        <ThemedText>
-          The layout file in <ThemedText type="defaultSemiBold">app/(tabs)/_layout.tsx</ThemedText>{' '}
-          sets up the tab navigator.
-        </ThemedText>
-        <ExternalLink href="https://docs.expo.dev/router/introduction">
-          <ThemedText type="link">Learn more</ThemedText>
-        </ExternalLink>
-      </Collapsible>
-      <Collapsible title="Android, iOS, and web support">
-        <ThemedText>
-          You can open this project on Android, iOS, and the web. To open the web version, press{' '}
-          <ThemedText type="defaultSemiBold">w</ThemedText> in the terminal running this project.
-        </ThemedText>
-      </Collapsible>
-      <Collapsible title="Images">
-        <ThemedText>
-          For static images, you can use the <ThemedText type="defaultSemiBold">@2x</ThemedText> and{' '}
-          <ThemedText type="defaultSemiBold">@3x</ThemedText> suffixes to provide files for
-          different screen densities
-        </ThemedText>
-        <Image
-          source={require('@/assets/images/react-logo.png')}
-          style={{ width: 100, height: 100, alignSelf: 'center' }}
+        <Pressable style={s.searchBtn} onPress={() => doLoad(1)}>
+          <Text style={s.searchBtnText}>Go</Text>
+        </Pressable>
+      </View>
+
+      {error && (
+        <View style={s.errorBar}>
+          <Text style={s.errorText}>{error}</Text>
+          <Pressable onPress={() => doLoad(1)}>
+            <Text style={s.retryText}>Retry</Text>
+          </Pressable>
+        </View>
+      )}
+
+      {novels.length === 0 && loading ? (
+        <View style={s.empty}>
+          <ActivityIndicator color={theme.primary} size="large" />
+        </View>
+      ) : novels.length === 0 && !loading ? (
+        <View style={s.empty}>
+          <Ionicons name="book-outline" size={48} color={theme.border} />
+          <Text style={s.emptyText}>No results found</Text>
+        </View>
+      ) : (
+        <FlatList
+          data={novels}
+          keyExtractor={(n) => n.id}
+          onEndReached={() => hasNext && !loading && doLoad(page + 1)}
+          onEndReachedThreshold={0.5}
+          ListFooterComponent={
+            loading ? (
+              <ActivityIndicator
+                color={theme.primary}
+                style={{ padding: 16 }}
+              />
+            ) : null
+          }
+          renderItem={({ item }) => (
+            <Pressable
+              style={s.card}
+              onPress={() =>
+                router.push(`/novel/${encodeURIComponent(item.id)}` as any)
+              }
+            >
+              <Image
+                source={{ uri: item.coverUrl ?? (item as any).cover_url }}
+                style={s.cover}
+                contentFit="cover"
+                cachePolicy="memory"
+              />
+              <View style={s.info}>
+                <Text style={s.cardTitle} numberOfLines={2}>
+                  {item.title}
+                </Text>
+                <Text style={s.cardStatus}>{(item as any).status}</Text>
+              </View>
+              <Ionicons
+                name="chevron-forward"
+                size={16}
+                color={theme.textMuted}
+              />
+            </Pressable>
+          )}
         />
-        <ExternalLink href="https://reactnative.dev/docs/images">
-          <ThemedText type="link">Learn more</ThemedText>
-        </ExternalLink>
-      </Collapsible>
-      <Collapsible title="Light and dark mode components">
-        <ThemedText>
-          This template has light and dark mode support. The{' '}
-          <ThemedText type="defaultSemiBold">useColorScheme()</ThemedText> hook lets you inspect
-          what the user&apos;s current color scheme is, and so you can adjust UI colors accordingly.
-        </ThemedText>
-        <ExternalLink href="https://docs.expo.dev/develop/user-interface/color-themes/">
-          <ThemedText type="link">Learn more</ThemedText>
-        </ExternalLink>
-      </Collapsible>
-      <Collapsible title="Animations">
-        <ThemedText>
-          This template includes an example of an animated component. The{' '}
-          <ThemedText type="defaultSemiBold">components/HelloWave.tsx</ThemedText> component uses
-          the powerful{' '}
-          <ThemedText type="defaultSemiBold" style={{ fontFamily: Fonts.mono }}>
-            react-native-reanimated
-          </ThemedText>{' '}
-          library to create a waving hand animation.
-        </ThemedText>
-        {Platform.select({
-          ios: (
-            <ThemedText>
-              The <ThemedText type="defaultSemiBold">components/ParallaxScrollView.tsx</ThemedText>{' '}
-              component provides a parallax effect for the header image.
-            </ThemedText>
-          ),
-        })}
-      </Collapsible>
-    </ParallaxScrollView>
+      )}
+    </View>
   );
 }
-
-const styles = StyleSheet.create({
-  headerImage: {
-    color: '#808080',
-    bottom: -90,
-    left: -35,
-    position: 'absolute',
-  },
-  titleContainer: {
-    flexDirection: 'row',
-    gap: 8,
-  },
-});
