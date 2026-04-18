@@ -1,31 +1,25 @@
 /**
  * DynamicExtensionRunner — executes downloaded JS bundles at runtime.
  *
- * Uses `new Function(sandboxKeys, source)` to run extension bundles in a
- * controlled sandbox without a WebView. The sandbox exposes only safe globals:
- * fetch, console, URLSearchParams, JSON, Promise, URL, etc.
+ * Uses eval() for Hermes compatibility (new Function() is not supported in
+ * Hermes release builds on Android). The register callback and node-html-parser's
+ * parse() function are exposed on globalThis so eval()'d code can access them,
+ * then cleaned up immediately after execution.
  *
- * The bundle must call __xaina_register(api) with the four required methods.
- * The result is wrapped in a DynamicExtension that implements the Extension interface.
- *
- * Usage:
- *   const source = await RemoteExtensionLoader.instance.read('en.freewebnovel');
- *   const ext = runBundle(source);
- *   ExtensionRegistry.register(ext);
+ * The bundle must call __xaina_register(api) with the required methods.
  */
 import type {
-    ChapterContent,
-    ChapterResult,
-    NovelDetail,
-    NovelResult,
-    SearchFilter,
+  ChapterContent,
+  ChapterResult,
+  NovelDetail,
+  NovelResult,
+  SearchFilter,
 } from "@/core/extension/types";
 import { Extension } from "@/core/extension/types";
+import parse from "node-html-parser";
 
-/**
- * The API object a bundle must pass to __xaina_register().
- * Plain object — no class required in the bundle.
- */
+// ─── Bundle API ───────────────────────────────────────────────────────────────
+
 interface BundleAPI {
   id: string;
   name: string;
@@ -46,10 +40,8 @@ interface BundleAPI {
   getPopular?(page: number): Promise<NovelResult[]>;
 }
 
-/**
- * Wraps a BundleAPI plain object as a proper Extension instance
- * so the rest of the app can use it identically to compiled sources.
- */
+// ─── Extension wrapper ────────────────────────────────────────────────────────
+
 class DynamicExtension extends Extension {
   readonly id: string;
   readonly name: string;
@@ -58,7 +50,6 @@ class DynamicExtension extends Extension {
   readonly baseUrl: string;
   override readonly iconUrl?: string;
   override readonly nsfw: boolean;
-
   private api: BundleAPI;
 
   constructor(api: BundleAPI) {
@@ -82,8 +73,8 @@ class DynamicExtension extends Extension {
   getChapters(novelUrl: string) {
     return this.api.getChapters?.(novelUrl) ?? Promise.resolve([]);
   }
-  getChapterContent(chapterUrl: string) {
-    return this.api.getChapterContent?.(chapterUrl) ?? Promise.resolve([]);
+  getChapterContent(url: string) {
+    return this.api.getChapterContent?.(url) ?? Promise.resolve([]);
   }
   override getLatest(page: number) {
     return this.api.getLatest?.(page) ?? super.getLatest(page);
@@ -93,41 +84,46 @@ class DynamicExtension extends Extension {
   }
 }
 
+// ─── Runner ───────────────────────────────────────────────────────────────────
+
 /**
  * Executes a bundle string and returns an Extension instance.
  *
- * Uses eval() instead of new Function() for Hermes compatibility.
- * Hermes (used in React Native release builds) does not support new Function(),
- * but does support eval(). Sandbox globals are injected as local variables
- * via a wrapping IIFE so the bundle's 'use strict' scope sees them.
- *
- * The bundle must call:
- *   __xaina_register({ id, name, lang, version, baseUrl, search, getNovelDetail, getChapters, getChapterContent })
+ * Strategy:
+ *  1. Assign a unique key on globalThis for the register callback.
+ *  2. Assign parse (node-html-parser) on globalThis so the bundle can call it.
+ *  3. Patch the bundle source to call our keyed register function.
+ *  4. eval() the patched source — works on Hermes release builds.
+ *  5. Clean up globalThis keys in a finally block.
  */
 export function runBundle(source: string): Extension {
   let registered: BundleAPI | null = null;
 
-  const __xaina_register = (api: BundleAPI) => {
+  // Unique key avoids collisions if runBundle is called concurrently
+  const regKey = `__xr_${Date.now()}_${Math.random().toString(36).slice(2)}`;
+
+  // Expose register callback globally (eval can't see outer locals in Hermes)
+  (globalThis as any)[regKey] = (api: BundleAPI) => {
     registered = api;
   };
 
-  // Wrap the bundle in an IIFE that receives sandbox values as parameters.
-  // This avoids new Function() while still giving the bundle a clean scope.
-  // eval() is supported by Hermes in both debug and release builds.
-  const wrapped = `(function(
-    __xaina_register, fetch, console, setTimeout, clearTimeout,
-    Promise, JSON, URL, URLSearchParams,
-    encodeURIComponent, decodeURIComponent,
-    parseFloat, parseInt, String, Array, Object, Math, Date, Error, parse
-  ) { "use strict";\n${source}\n})(
-    __xaina_register, fetch, console, setTimeout, clearTimeout,
-    Promise, JSON, URL, URLSearchParams,
-    encodeURIComponent, decodeURIComponent,
-    parseFloat, parseInt, String, Array, Object, Math, Date, Error, parse
-  );`;
+  // Expose parse globally so the bundle's parseHTML() works
+  const prevParse = (globalThis as any).parse;
+  (globalThis as any).parse = parse;
 
-  // eslint-disable-next-line no-eval
-  eval(wrapped);
+  try {
+    // Replace __xaina_register( with our keyed version
+    const patched = source.replace(/__xaina_register\s*\(/g, `${regKey}(`);
+    // eslint-disable-next-line no-eval
+    eval(patched);
+  } finally {
+    delete (globalThis as any)[regKey];
+    if (prevParse !== undefined) {
+      (globalThis as any).parse = prevParse;
+    } else {
+      delete (globalThis as any).parse;
+    }
+  }
 
   if (!registered) {
     throw new Error("Bundle did not call __xaina_register()");

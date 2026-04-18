@@ -53,58 +53,81 @@
 
   // ─── LISTING PAGE PARSER ─────────────────────────────────
   //
-  // Verified from real HTML:
-  //   card      : div.li-row
-  //   title+url : h3.tit a
-  //   cover     : .pic img  [src]
-  //   rating    : .core span
-  //   language  : .desc .item em.e1 a
-  //   genres    : .desc .item a.novel[href*="/genre/"]
-  //   chapters  : .desc .item a.chapter span.s1  (e.g. "30 Chapters")
-  //   latest ch : .desc .item a.chapter  [href]
-  //   completed : span.s2  (text "Full")
+  // Live HTML structure (verified):
+  //   Each entry has: img, h3 > a (title+href), language link, genre links,
+  //   chapter count link, "Full" badge
+  //
+  //   Cover img src: /files/article/image/N/NNN/NNNss.jpg
+  //   Title + href : h3 a  (inside the card section)
+  //   Language     : a[href*="latest-release"]
+  //   Genres       : a[href*="/genre/"]
+  //   Chapter link : a[href*="/chapter-"]  (last chapter URL + count text)
+  //   Full badge   : text "Full" or "HOT" or "HOTFULL" before the h3
 
   function parseListingCards(root) {
     const results = [];
     const seen = new Set();
 
-    const cards = root.querySelectorAll('div.li-row');
-    cards.forEach(card => {
-      const titleEl = card.querySelector('h3.tit a');
-      const href = titleEl?.getAttribute('href');
-      if (!href) return;
+    // Each novel entry has an h3 with an anchor — use that as the anchor point
+    const h3s = root.querySelectorAll('h3 a[href*="/novel/"]');
 
+    h3s.forEach(titleEl => {
+      const href = titleEl.getAttribute('href');
+      if (!href) return;
       const url = absoluteUrl(href);
       if (!url || seen.has(url)) return;
       seen.add(url);
 
-      const imgEl = card.querySelector('.pic img');
-      const coverUrl = absoluteUrl(
-        imgEl?.getAttribute('src') ?? imgEl?.getAttribute('data-src') ?? ''
-      );
+      const title = titleEl.text.trim();
+      if (!title) return;
 
-      const genres = card
-        .querySelectorAll('.desc .item a.novel[href*="/genre/"]')
-        .map(a => a.text.trim())
-        .filter(Boolean);
+      // Walk up to find the containing section — look for nearby img
+      // The cover img has src pattern /files/article/image/...
+      // It appears before the h3 in the same block
+      // We'll extract the novel slug from href and build the cover URL
+      const slug = novelIdFromUrl(href);
 
-      const chapEl = card.querySelector('.desc .item a.chapter');
-      const chapCountText = chapEl?.querySelector('span.s1')?.text.trim() ?? '';
-      const chapUrl = chapEl ? absoluteUrl(chapEl.getAttribute('href')) : '';
+      // Try to find cover from nearby img — search in parent nodes
+      let coverUrl = '';
+      let node = titleEl.parentNode; // h3
+      // Walk up a few levels to find an img sibling
+      for (let i = 0; i < 5 && node; i++) {
+        const img = node.querySelector('img[src*="/files/article/image/"]');
+        if (img) {
+          coverUrl = absoluteUrl(img.getAttribute('src') ?? '');
+          break;
+        }
+        node = node.parentNode;
+      }
 
-      const fullBadge = card.querySelector('span.s2');
-      const completed = fullBadge?.text.trim() === 'Full';
+      // Genres: links to /genre/ near this h3
+      const genres = [];
+      let gNode = titleEl.parentNode;
+      for (let i = 0; i < 5 && gNode; i++) {
+        gNode.querySelectorAll('a[href*="/genre/"]').forEach(a => {
+          const g = a.text.trim();
+          if (g) genres.push(g);
+        });
+        if (genres.length) break;
+        gNode = gNode.parentNode;
+      }
+
+      // Status: look for "Full" text near the h3
+      let status = 'ongoing';
+      let sNode = titleEl.parentNode;
+      for (let i = 0; i < 5 && sNode; i++) {
+        if (sNode.text && sNode.text.includes('Full')) { status = 'completed'; break; }
+        sNode = sNode.parentNode;
+      }
 
       results.push({
-        id: novelIdFromUrl(href),
+        id: slug,
         sourceId: 'en.freewebnovel',
-        title: titleEl.text.trim(),
+        title,
         coverUrl,
         url,
         genres,
-        status: completed ? 'completed' : 'ongoing',
-        chapCountText,
-        latestChapterUrl: chapUrl,
+        status,
       });
     });
 
@@ -112,16 +135,6 @@
   }
 
   // ─── SEARCH / POPULAR ────────────────────────────────────
-  //
-  // Search  : POST /search/          body: searchkey=<query>
-  //           page 2+: POST /search/2/
-  //
-  // Popular : GET  /sort/most-popular/     (page 1)
-  //           GET  /sort/most-popular/2/   (page 2+)
-  //
-  // Pagination: div.pages ul li a[href]
-  //   href pattern: /sort/most-popular/2, /sort/most-popular/3 …
-  //   current page: div.pages ul li strong  (no href)
 
   async function search(query, page) {
     let html;
@@ -146,57 +159,72 @@
 
   // ─── NOVEL DETAIL ────────────────────────────────────────
   //
-  // Verified selectors:
-  //   title       : h1.tit
-  //   cover       : .pic img
-  //   author      : .txt .item a.a1
-  //   genres      : .txt .item a[href*="/genre/"]
-  //   language    : em.e1 a  (or a[href*="english-novel"])
-  //   status      : .item .s1.s2 a   → "OnGoing" / "Completed"
-  //   description : .m-desc .inner
-  //   latest chs  : .m-newest1 .ul-list5 li a.con  (top 6)
+  // Live HTML (verified from shadow-slave page):
+  //   Cover   : img[src*="/files/article/image/"] (first one, the large cover)
+  //   Author  : a[href*="/author/"]
+  //   Genres  : a[href*="/genre/"]
+  //   Language: a[href*="latest-release/english-novel"] etc.
+  //   Status  : text "OnGoing" or "Completed" — look for a[href*="latest-release"]:not([href*="novel"])
+  //   Summary : section after "SUMMARY" heading — .m-desc or look for the paragraph block
+  //   Latest  : links in "6 LATEST CHAPTERS" section — a[href*="/chapter-"] (first 6)
+  //   Chapters: all a[href*="/chapter-"] that match /novel/slug/chapter-N
 
   async function getNovelDetail(url) {
     const html = await fetchText(url);
     const root = parseHTML(html);
 
-    const title = root.querySelector('h1.tit')?.text.trim() ?? '';
+    const title = root.querySelector('h1')?.text.trim()
+      ?? root.querySelector('h3')?.text.trim()
+      ?? '';
 
-    const imgEl = root.querySelector('.pic img');
+    // Cover: first large image
+    const imgEl = root.querySelector('img[src*="/files/article/image/"]');
     const coverUrl = absoluteUrl(
       imgEl?.getAttribute('src') ?? imgEl?.getAttribute('data-src') ?? ''
     );
 
-    const author = root.querySelector('.txt .item a.a1')?.text.trim() ?? '';
+    // Author
+    const author = root.querySelector('a[href*="/author/"]')?.text.trim() ?? '';
 
+    // Genres
     const genres = root
-      .querySelectorAll('.txt .item a[href*="/genre/"]')
+      .querySelectorAll('a[href*="/genre/"]')
       .map(a => a.text.trim())
       .filter(Boolean);
 
     // Language
     let language = 'en';
-    const langHref = root.querySelector('em.e1 a')?.getAttribute('href') ?? '';
-    if (langHref.includes('chinese')) language = 'zh';
-    else if (langHref.includes('korean')) language = 'ko';
+    const langEl = root.querySelector('a[href*="latest-release/chinese"]')
+      ?? root.querySelector('a[href*="latest-release/korean"]')
+      ?? root.querySelector('a[href*="latest-release/japanese"]');
+    if (langEl) {
+      const h = langEl.getAttribute('href') ?? '';
+      if (h.includes('chinese')) language = 'zh';
+      else if (h.includes('korean')) language = 'ko';
+      else if (h.includes('japanese')) language = 'ja';
+    }
 
-    // Status
-    const statusRaw = root.querySelector('.item .s1.s2 a')?.text.trim().toLowerCase() ?? '';
-    const status = statusRaw.includes('ongoing')  ? 'ongoing'
-      : statusRaw.includes('complet') ? 'completed'
-      : statusRaw.includes('hiatus')  ? 'hiatus'
-      : 'unknown';
+    // Status: look for OnGoing / Completed text
+    const bodyText = root.text;
+    const status = /completed/i.test(bodyText) && !/ongoing/i.test(bodyText)
+      ? 'completed'
+      : /ongoing/i.test(bodyText) ? 'ongoing' : 'unknown';
 
-    const description = root.querySelector('.m-desc .inner')?.text.trim() ?? '';
+    // Description: the SUMMARY section paragraphs
+    const description = root.querySelector('.m-desc')?.text.trim()
+      ?? root.querySelector('.summary')?.text.trim()
+      ?? '';
 
-    // Latest chapter (first of top-6 list)
-    const latestEl = root.querySelector('.m-newest1 .ul-list5 li a.con');
+    // Latest chapter: first chapter link in the "LATEST CHAPTERS" block
+    const slug = novelIdFromUrl(url);
+    const chapterLinks = root.querySelectorAll(`a[href*="/novel/${slug}/chapter-"]`);
+    const latestEl = chapterLinks[0] ?? null;
     const latestChapter = latestEl
       ? { title: latestEl.text.trim(), url: absoluteUrl(latestEl.getAttribute('href')) }
       : null;
 
     return {
-      id: novelIdFromUrl(url),
+      id: slug,
       sourceId: 'en.freewebnovel',
       title,
       coverUrl,
@@ -212,18 +240,17 @@
 
   // ─── CHAPTER LIST ────────────────────────────────────────
   //
-  // All chapters are in the HTML already (hidden per group via display:none).
-  // Verified selector: .m-newest2 #idData li a.con
-  // No JS execution needed — all <li> tags present in source.
+  // Live HTML (verified): chapter links are plain anchors
+  //   a[href*="/novel/slug/chapter-"]
+  // All chapters visible in HTML (JS pagination hides groups via display:none
+  // but all <a> tags are present in the source).
 
   async function getChapters(novelUrl) {
     const html = await fetchText(novelUrl);
     const root = parseHTML(html);
 
-    let links = root.querySelectorAll('.m-newest2 #idData li a.con');
-    if (!links.length) links = root.querySelectorAll('.m-newest2 ul li a');
-    if (!links.length) links = root.querySelectorAll('#idData li a');
-    if (!links.length) links = root.querySelectorAll('a[href*="/chapter-"]');
+    const slug = novelIdFromUrl(novelUrl);
+    const links = root.querySelectorAll(`a[href*="/novel/${slug}/chapter-"]`);
 
     const chapters = [];
     const seen = new Set();
@@ -255,18 +282,10 @@
 
   // ─── CHAPTER CONTENT ────────────────────────────────────
   //
-  // Verified selectors:
-  //   content container : div.txt #article
-  //   paragraphs        : p  (inside #article)
-  //   watermark tags    : subtxt  → strip before extracting text
-  //   prev chapter      : a#prev_url  — points to novel page when on chapter 1
-  //   next chapter      : a#next_url  — points to novel page when on last chapter
-  //
-  // Detection: if href contains "/novel/" but NOT "/chapter-" → boundary (first/last)
-
-  function isChapterUrl(href) {
-    return href && href.includes('/chapter-');
-  }
+  // Live HTML (verified):
+  //   Content container : div.txt #article  or  #article
+  //   Paragraphs        : p tags inside
+  //   Watermarks        : <subtxt> tags inside <p> — skip their text
 
   async function getChapterContent(chapterUrl) {
     const html = await fetchText(chapterUrl);
@@ -280,33 +299,25 @@
 
     if (!article) return [{ index: 0, text: '' }];
 
-    // Strip watermark <subtxt> nodes — replace their raw HTML with empty string
-    // node-html-parser: use innerHTML manipulation to remove subtxt
     const paras = article.querySelectorAll('p');
     const result = [];
     let idx = 0;
 
     paras.forEach(p => {
-      // Remove all subtxt children by rebuilding text without them
       let text = '';
       p.childNodes.forEach(node => {
-        // TextNode has nodeType 3; element nodes have tagName
         if (!node.tagName) {
-          // raw text node
           text += node.text ?? '';
         } else if (node.tagName.toLowerCase() !== 'subtxt') {
           text += node.text ?? '';
         }
-        // subtxt nodes are skipped entirely
       });
-
       text = text.trim();
       if (text.length > 0) result.push({ index: idx++, text });
     });
 
     if (result.length > 0) return result;
 
-    // Fallback: strip subtxt via regex on raw text
     return article.text
       .split('\n')
       .map(t => t.trim())
@@ -320,7 +331,7 @@
     id: 'en.freewebnovel',
     name: 'FreeWebNovel',
     lang: 'en',
-    version: '9.3.0',
+    version: '10.0.0',
     baseUrl: BASE,
     iconUrl: `${BASE}/favicon.ico`,
     search,
