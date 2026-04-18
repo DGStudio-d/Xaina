@@ -31,29 +31,41 @@ export function getLibraryNovels(
         ? "n.lastReadAt DESC"
         : "n.addedAt DESC";
 
-  const filterClause =
-    filter === "reading"
-      ? "AND n.lastReadChapter IS NOT NULL AND n.status != 'completed'"
-      : filter === "completed"
-        ? "AND n.status = 'completed'"
-        : filter === "favorites"
-          ? "AND n.favorite = 1"
-          : "";
+  const conditions: string[] = ["n.inLibrary = 1"];
+  const params: (string | number)[] = [];
 
-  const searchClause = search.trim()
-    ? `AND (n.title LIKE '%${search.replace(/'/g, "''")}%' OR n.author LIKE '%${search.replace(/'/g, "''")}%')`
-    : "";
+  if (filter === "reading") {
+    conditions.push(
+      "n.lastReadChapter IS NOT NULL AND n.status != 'completed'",
+    );
+  } else if (filter === "completed") {
+    conditions.push("n.status = 'completed'");
+  } else if (filter === "favorites") {
+    conditions.push("n.favorite = 1");
+  }
 
-  return db.getAllSync<LibraryNovel>(`
-    SELECT
-      n.*,
-      (SELECT COUNT(*) FROM chapters c WHERE c.novelId = n.id AND c.read = 0) AS unreadCount
-    FROM novels n
-    WHERE n.inLibrary = 1
-    ${filterClause}
-    ${searchClause}
-    ORDER BY ${orderCol}
-  `);
+  if (search.trim()) {
+    conditions.push("(n.title LIKE ? OR n.author LIKE ?)");
+    params.push(`%${search.trim()}%`, `%${search.trim()}%`);
+  }
+
+  const where = conditions.join(" AND ");
+
+  return db.getAllSync<LibraryNovel>(
+    `SELECT
+       n.*,
+       COALESCE(uc.unreadCount, 0) AS unreadCount
+     FROM novels n
+     LEFT JOIN (
+       SELECT novelId, COUNT(*) AS unreadCount
+       FROM chapters
+       WHERE read = 0
+       GROUP BY novelId
+     ) uc ON uc.novelId = n.id
+     WHERE ${where}
+     ORDER BY ${orderCol}`,
+    ...params,
+  );
 }
 
 export function toggleFavorite(novelId: string, fav: boolean) {

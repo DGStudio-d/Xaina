@@ -5,15 +5,15 @@ import { upsertNovel } from "@/lib/db";
 import { Ionicons } from "@expo/vector-icons";
 import { Image } from "expo-image";
 import { useRouter } from "expo-router";
-import { useState } from "react";
+import React, { useState } from "react";
 import {
-  ActivityIndicator,
-  FlatList,
-  Pressable,
-  StyleSheet,
-  Text,
-  TextInput,
-  View,
+    ActivityIndicator,
+    FlatList,
+    Pressable,
+    StyleSheet,
+    Text,
+    TextInput,
+    View,
 } from "react-native";
 
 type Screen = "list" | "novels";
@@ -30,18 +30,22 @@ export default function ExploreScreen() {
   const [novels, setNovels] = useState<NovelResult[]>([]);
   const [query, setQuery] = useState("");
   const [page, setPage] = useState(1);
-  const [hasNext, setHasNext] = useState(false);
+  const [hasNext, setHasNext] = useState(true);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // ref so onEndReached always sees the latest page without stale closure
+  const pageRef = React.useRef(1);
+  const loadingRef = React.useRef(false);
 
   function openExtension(ext: Extension) {
     setActiveExt(ext);
     setNovels([]);
     setQuery("");
     setPage(1);
+    pageRef.current = 1;
+    setHasNext(true);
     setError(null);
     setScreen("novels");
-    // auto-load popular immediately
     doLoadWith(ext, 1, "");
   }
 
@@ -50,16 +54,18 @@ export default function ExploreScreen() {
     setActiveExt(null);
     setNovels([]);
     setPage(1);
+    pageRef.current = 1;
+    setHasNext(true);
     setError(null);
   }
 
   async function doLoadWith(ext: Extension, p: number, q: string) {
+    if (loadingRef.current) return; // prevent double-fire
+    loadingRef.current = true;
     setLoading(true);
     setError(null);
     try {
       const raw = q.trim() ? await ext.search(q, p) : await ext.getPopular(p);
-
-      // normalise — bundle returns a plain array, typed interface returns array too
       const results: NovelResult[] = Array.isArray(raw) ? raw : [];
 
       results.forEach((n) =>
@@ -91,18 +97,28 @@ export default function ExploreScreen() {
           return true;
         });
       });
-      setHasNext(results.length >= 10);
+
+      // assume there's a next page if we got any results; stop when empty
+      const nextHasMore = results.length > 0;
+      setHasNext(nextHasMore);
+      pageRef.current = p;
       setPage(p);
     } catch (e: any) {
       setError(e?.message ?? "Failed to load");
     } finally {
+      loadingRef.current = false;
       setLoading(false);
     }
   }
 
-  async function doLoad(p = 1, q = query) {
+  async function doLoad(p = pageRef.current, q = query) {
     if (!activeExt) return;
     await doLoadWith(activeExt, p, q);
+  }
+
+  function loadNextPage() {
+    if (!activeExt || loadingRef.current || !hasNext) return;
+    doLoadWith(activeExt, pageRef.current + 1, query);
   }
 
   const s = StyleSheet.create({
@@ -287,10 +303,19 @@ export default function ExploreScreen() {
           placeholderTextColor={theme.textMuted}
           value={query}
           onChangeText={setQuery}
-          onSubmitEditing={() => doLoad(1)}
+          onSubmitEditing={() => {
+            pageRef.current = 1;
+            doLoad(1, query);
+          }}
           returnKeyType="search"
         />
-        <Pressable style={s.searchBtn} onPress={() => doLoad(1)}>
+        <Pressable
+          style={s.searchBtn}
+          onPress={() => {
+            pageRef.current = 1;
+            doLoad(1, query);
+          }}
+        >
           <Text style={s.searchBtnText}>Go</Text>
         </Pressable>
       </View>
@@ -317,7 +342,7 @@ export default function ExploreScreen() {
         <FlatList
           data={novels}
           keyExtractor={(n) => n.id}
-          onEndReached={() => hasNext && !loading && doLoad(page + 1)}
+          onEndReached={loadNextPage}
           onEndReachedThreshold={0.5}
           ListFooterComponent={
             loading ? (
@@ -325,6 +350,17 @@ export default function ExploreScreen() {
                 color={theme.primary}
                 style={{ padding: 16 }}
               />
+            ) : !hasNext && novels.length > 0 ? (
+              <Text
+                style={{
+                  color: theme.textMuted,
+                  textAlign: "center",
+                  padding: 16,
+                  fontSize: 13,
+                }}
+              >
+                No more results
+              </Text>
             ) : null
           }
           renderItem={({ item }) => (

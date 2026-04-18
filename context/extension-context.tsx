@@ -1,7 +1,7 @@
 import { getBundleCode, getInstalled } from "@/core/extension/store";
 import { Extension } from "@/core/extension/types";
 import { runBundle } from "@/lib/DynamicExtensionRunner";
-import React, { createContext, useContext, useEffect } from "react";
+import React, { createContext, useContext, useEffect, useMemo } from "react";
 
 export type ExtensionsAction =
   | { type: "add"; value: Extension }
@@ -33,18 +33,30 @@ export const ExtensionProvider = ({
   const [extensions, dispatch] = React.useReducer(extensionReducer, []);
 
   useEffect(() => {
-    const installed = getInstalled();
-    const loaded: Extension[] = [];
-    for (const ext of installed) {
-      const code = getBundleCode(ext.id);
-      if (code) loaded.push(runBundle(code));
-    }
-    dispatch({ type: "reset", value: loaded });
+    const timer = setTimeout(() => {
+      const installed = getInstalled();
+      const loaded: Extension[] = [];
+      for (const ext of installed) {
+        const code = getBundleCode(ext.id);
+        if (code) {
+          try {
+            loaded.push(runBundle(code));
+          } catch (e) {
+            console.warn(`Failed to load extension ${ext.id}:`, e);
+          }
+        }
+      }
+      dispatch({ type: "reset", value: loaded });
+    }, 0);
+    return () => clearTimeout(timer);
   }, []);
+
+  // Stable references — only change when extensions array actually changes
+  const dispatchMemo = useMemo(() => dispatch, []);
 
   return (
     <ExtensionContext.Provider value={extensions}>
-      <ExtensionDispatchContext.Provider value={dispatch}>
+      <ExtensionDispatchContext.Provider value={dispatchMemo}>
         {children}
       </ExtensionDispatchContext.Provider>
     </ExtensionContext.Provider>

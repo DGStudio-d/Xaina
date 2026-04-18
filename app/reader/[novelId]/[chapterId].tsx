@@ -33,12 +33,6 @@ interface LoadedChapter {
   paragraphs: ChapterContent[];
 }
 
-// ─── Helpers ──────────────────────────────────────────────────────────────────
-
-function formatChapterLabel(c: DbChapter) {
-  return `Ch. ${c.number} — ${c.title}`;
-}
-
 // ─── Component ────────────────────────────────────────────────────────────────
 
 export default function ReaderScreen() {
@@ -58,6 +52,7 @@ export default function ReaderScreen() {
   const [allChapters, setAllChapters] = useState<DbChapter[]>([]);
   const [loaded, setLoaded] = useState<LoadedChapter[]>([]);
   const [loadingId, setLoadingId] = useState<string | null>(null);
+  const [loadError, setLoadError] = useState<string | null>(null);
   const [novelTitle, setNovelTitle] = useState("");
   const [headerVisible, setHeaderVisible] = useState(true);
 
@@ -65,6 +60,7 @@ export default function ReaderScreen() {
 
   useEffect(() => {
     if (!novelId || !chapterId) return;
+    if (extensions.length === 0) return; // wait for extensions to load
 
     const novel = getNovelById(novelId);
     if (novel) setNovelTitle(novel.title);
@@ -74,7 +70,7 @@ export default function ReaderScreen() {
 
     const start = chapters.find((c) => c.id === chapterId);
     if (start) loadChapter(start, chapters, true);
-  }, [novelId, chapterId]);
+  }, [novelId, chapterId, extensions]); // re-run when extensions load
 
   // ── Load a chapter (with cache) ────────────────────────────────────────────
 
@@ -90,13 +86,21 @@ export default function ReaderScreen() {
       let paragraphs: ChapterContent[] = [];
 
       const cached = getCachedContent(chapter.id);
-      if (cached) {
-        paragraphs = JSON.parse(cached);
+      // Only use cache if it has actual content
+      const parsedCache: ChapterContent[] = cached ? JSON.parse(cached) : [];
+      if (parsedCache.length > 0) {
+        paragraphs = parsedCache;
       } else {
         const ext = extensions.find((e) => e.id === chapter.sourceId);
         if (!ext) throw new Error(`Extension "${chapter.sourceId}" not loaded`);
+        console.log(
+          `📖 Fetching chapter: ${chapter.title} from ${chapter.url}`,
+        );
         paragraphs = await ext.getChapterContent(chapter.url);
-        setCachedContent(chapter.id, JSON.stringify(paragraphs));
+        console.log(`📄 Got ${paragraphs.length} paragraphs`);
+        if (paragraphs.length > 0) {
+          setCachedContent(chapter.id, JSON.stringify(paragraphs));
+        }
       }
 
       markChapterRead(chapter.id);
@@ -121,6 +125,7 @@ export default function ReaderScreen() {
       }
     } catch (e: any) {
       console.warn("Failed to load chapter:", e?.message);
+      setLoadError(e?.message ?? "Failed to load chapter");
     } finally {
       setLoadingId(null);
     }
@@ -140,9 +145,6 @@ export default function ReaderScreen() {
       if (current) setScrollPosition(current.id, y);
     }
 
-    // Hide/show header based on scroll direction
-    setHeaderVisible(y < 60);
-
     // Auto-load next chapter when near bottom (within 1.5 screens)
     if (y + height >= total - height * 1.5) {
       const lastLoaded = loaded[loaded.length - 1];
@@ -157,12 +159,21 @@ export default function ReaderScreen() {
   }
 
   function getCurrentChapter(scrollY: number): DbChapter | null {
-    let current: DbChapter | null = null;
-    for (const lc of loaded) {
-      const offset = chapterOffsets.current[lc.chapter.id] ?? 0;
-      if (scrollY >= offset) current = lc.chapter;
+    // Binary search through sorted chapter offsets
+    let lo = 0,
+      hi = loaded.length - 1,
+      result: DbChapter | null = null;
+    while (lo <= hi) {
+      const mid = (lo + hi) >> 1;
+      const offset = chapterOffsets.current[loaded[mid].chapter.id] ?? 0;
+      if (offset <= scrollY) {
+        result = loaded[mid].chapter;
+        lo = mid + 1;
+      } else {
+        hi = mid - 1;
+      }
     }
-    return current;
+    return result;
   }
 
   // ── Styles ─────────────────────────────────────────────────────────────────
@@ -259,12 +270,29 @@ export default function ReaderScreen() {
     : -1;
   const isAtEnd = lastIdx === allChapters.length - 1;
 
+  if (extensions.length === 0) {
+    return (
+      <View
+        style={[
+          s.container,
+          { alignItems: "center", justifyContent: "center" },
+        ]}
+      >
+        <ActivityIndicator color={theme.primary} size="large" />
+      </View>
+    );
+  }
+
   return (
     <View style={s.container}>
       {/* Floating header */}
       {headerVisible && (
         <View style={s.header}>
-          <Pressable onPress={() => router.back()}>
+          <Pressable
+            onPress={() =>
+              router.replace(`/novel/${encodeURIComponent(novelId!)}` as any)
+            }
+          >
             <Ionicons name="arrow-back" size={22} color={theme.text} />
           </Pressable>
           <Text style={s.headerTitle} numberOfLines={1}>
@@ -280,76 +308,100 @@ export default function ReaderScreen() {
         scrollEventThrottle={100}
         showsVerticalScrollIndicator={false}
       >
-        {loaded.map((lc, i) => {
-          const prev = loaded[i - 1]?.chapter ?? null;
-          const isFirst = i === 0;
+        <Pressable onPress={() => setHeaderVisible((v) => !v)}>
+          {loaded.map((lc, i) => {
+            const prev = loaded[i - 1]?.chapter ?? null;
+            const isFirst = i === 0;
 
-          return (
-            <View
-              key={lc.chapter.id}
-              onLayout={(e) => {
-                chapterOffsets.current[lc.chapter.id] = e.nativeEvent.layout.y;
-              }}
-            >
-              {/* Divider card between chapters */}
-              {!isFirst && prev && (
-                <View style={s.dividerCard}>
-                  <View style={s.dividerRow}>
-                    <Ionicons
-                      name="checkmark-circle"
-                      size={18}
-                      color={theme.primary}
-                    />
-                    <Text style={s.dividerLabel}>FINISHED</Text>
-                    <Text style={s.dividerTitle} numberOfLines={1}>
-                      {prev.title}
-                    </Text>
-                    <Text style={s.dividerNum}>Ch. {prev.number}</Text>
+            return (
+              <View
+                key={lc.chapter.id}
+                onLayout={(e) => {
+                  chapterOffsets.current[lc.chapter.id] =
+                    e.nativeEvent.layout.y;
+                }}
+              >
+                {/* Divider card between chapters */}
+                {!isFirst && prev && (
+                  <View style={s.dividerCard}>
+                    <View style={s.dividerRow}>
+                      <Ionicons
+                        name="checkmark-circle"
+                        size={18}
+                        color={theme.primary}
+                      />
+                      <Text style={s.dividerLabel}>FINISHED</Text>
+                      <Text style={s.dividerTitle} numberOfLines={1}>
+                        {prev.title}
+                      </Text>
+                      <Text style={s.dividerNum}>Ch. {prev.number}</Text>
+                    </View>
+                    <View style={s.dividerSep} />
+                    <View style={s.dividerRow}>
+                      <Ionicons
+                        name="book-outline"
+                        size={18}
+                        color={theme.textMuted}
+                      />
+                      <Text style={s.dividerLabel}>UP NEXT</Text>
+                      <Text style={s.dividerTitle} numberOfLines={1}>
+                        {lc.chapter.title}
+                      </Text>
+                      <Text style={s.dividerNum}>Ch. {lc.chapter.number}</Text>
+                    </View>
                   </View>
-                  <View style={s.dividerSep} />
-                  <View style={s.dividerRow}>
-                    <Ionicons
-                      name="book-outline"
-                      size={18}
-                      color={theme.textMuted}
-                    />
-                    <Text style={s.dividerLabel}>UP NEXT</Text>
-                    <Text style={s.dividerTitle} numberOfLines={1}>
-                      {lc.chapter.title}
+                )}
+
+                {/* Chapter paragraphs */}
+                <View style={s.chapterBlock}>
+                  {lc.paragraphs.map((p) => (
+                    <Text key={p.index} style={s.paragraph}>
+                      {p.text}
                     </Text>
-                    <Text style={s.dividerNum}>Ch. {lc.chapter.number}</Text>
-                  </View>
+                  ))}
                 </View>
-              )}
-
-              {/* Chapter paragraphs */}
-              <View style={s.chapterBlock}>
-                {lc.paragraphs.map((p) => (
-                  <Text key={p.index} style={s.paragraph}>
-                    {p.text}
-                  </Text>
-                ))}
               </View>
+            );
+          })}
+
+          {/* Loading next chapter */}
+          {loadingId && (
+            <View style={s.loadingRow}>
+              <ActivityIndicator color={theme.primary} />
+              <Text style={s.loadingText}>Loading next chapter…</Text>
             </View>
-          );
-        })}
+          )}
 
-        {/* Loading next chapter */}
-        {loadingId && (
-          <View style={s.loadingRow}>
-            <ActivityIndicator color={theme.primary} />
-            <Text style={s.loadingText}>Loading next chapter…</Text>
-          </View>
-        )}
+          {/* Load error */}
+          {loadError && !loadingId && loaded.length === 0 && (
+            <View style={[s.loadingRow, { flexDirection: "column" }]}>
+              <Ionicons
+                name="alert-circle-outline"
+                size={32}
+                color={theme.danger}
+              />
+              <Text
+                style={{
+                  color: theme.danger,
+                  fontSize: 13,
+                  textAlign: "center",
+                  marginTop: 8,
+                }}
+              >
+                {loadError}
+              </Text>
+            </View>
+          )}
 
-        {/* End of novel */}
-        {isAtEnd && !loadingId && loaded.length > 0 && (
-          <View style={s.endCard}>
-            <Ionicons name="trophy-outline" size={32} color={theme.primary} />
-            <Text style={s.endTitle}>You've reached the end</Text>
-            <Text style={s.endSub}>No more chapters available</Text>
-          </View>
-        )}
+          {/* End of novel */}
+          {isAtEnd && !loadingId && loaded.length > 0 && (
+            <View style={s.endCard}>
+              <Ionicons name="trophy-outline" size={32} color={theme.primary} />
+              <Text style={s.endTitle}>You've reached the end</Text>
+              <Text style={s.endSub}>No more chapters available</Text>
+            </View>
+          )}
+        </Pressable>
       </ScrollView>
     </View>
   );

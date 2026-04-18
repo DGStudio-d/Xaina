@@ -7,8 +7,11 @@
 
   // ─── HTTP ────────────────────────────────────────────────
 
-  async function fetchText(url, options = {}, retries = 3) {
+  async function fetchText(url, options = {}, retries = 2) {
     try {
+      const controller = new AbortController();
+      const timeout = setTimeout(() => controller.abort(), 15000); // 15s timeout
+
       const res = await fetch(url, {
         method: options.method || 'GET',
         headers: {
@@ -19,10 +22,13 @@
           ...(options.headers || {}),
         },
         body: options.body,
+        signal: controller.signal,
       });
 
+      clearTimeout(timeout);
+
       if ((res.status === 403 || res.status === 503) && retries > 0) {
-        await sleep(3000);
+        await sleep(1500);
         return fetchText(url, options, retries - 1);
       }
 
@@ -30,7 +36,7 @@
       return res.text();
     } catch (err) {
       if (retries > 0) {
-        await sleep(2000);
+        await sleep(1000);
         return fetchText(url, options, retries - 1);
       }
       throw err;
@@ -47,29 +53,85 @@
   }
 
   function novelIdFromUrl(url) {
-    // /novel/some-slug  or  /novel/some-slug/
     const m = url.match(/\/novel\/([^/?#]+)/);
     return m ? m[1] : url;
   }
 
-  // ─── SEARCH / POPULAR ────────────────────────────────────
+  // ─── LISTING PAGE PARSER ─────────────────────────────────
   //
-  // Search  : POST https://freewebnovel.com/search/
-  //           body: searchkey=<query>
-  //           paginate: /search/2, /search/3 …
-  //
-  // Popular : GET  https://freewebnovel.com/most-popular/<page>.html
-  //           (page 1 has no number suffix)
-  //
-  // Result selector: .col-content .con .txt h3 a
+  // Verified from real HTML:
+  //   card      : div.li-row
+  //   title+url : h3.tit a
+  //   cover     : .pic img  [src]
+  //   rating    : .core span
+  //   language  : .desc .item em.e1 a
+  //   genres    : .desc .item a.novel[href*="/genre/"]
+  //   chapters  : .desc .item a.chapter span.s1  (e.g. "30 Chapters")
+  //   latest ch : .desc .item a.chapter  [href]
+  //   completed : span.s2  (text "Full")
 
-  async function search(query, page) {
+  function parseListingCards(root) {
     const results = [];
     const seen = new Set();
 
+    const cards = root.querySelectorAll('div.li-row');
+    cards.forEach(card => {
+      const titleEl = card.querySelector('h3.tit a');
+      const href = titleEl?.getAttribute('href');
+      if (!href) return;
+
+      const url = absoluteUrl(href);
+      if (!url || seen.has(url)) return;
+      seen.add(url);
+
+      const imgEl = card.querySelector('.pic img');
+      const coverUrl = absoluteUrl(
+        imgEl?.getAttribute('src') ?? imgEl?.getAttribute('data-src') ?? ''
+      );
+
+      const genres = card
+        .querySelectorAll('.desc .item a.novel[href*="/genre/"]')
+        .map(a => a.text.trim())
+        .filter(Boolean);
+
+      const chapEl = card.querySelector('.desc .item a.chapter');
+      const chapCountText = chapEl?.querySelector('span.s1')?.text.trim() ?? '';
+      const chapUrl = chapEl ? absoluteUrl(chapEl.getAttribute('href')) : '';
+
+      const fullBadge = card.querySelector('span.s2');
+      const completed = fullBadge?.text.trim() === 'Full';
+
+      results.push({
+        id: novelIdFromUrl(href),
+        sourceId: 'en.freewebnovel',
+        title: titleEl.text.trim(),
+        coverUrl,
+        url,
+        genres,
+        status: completed ? 'completed' : 'ongoing',
+        chapCountText,
+        latestChapterUrl: chapUrl,
+      });
+    });
+
+    return results;
+  }
+
+  // ─── SEARCH / POPULAR ────────────────────────────────────
+  //
+  // Search  : POST /search/          body: searchkey=<query>
+  //           page 2+: POST /search/2/
+  //
+  // Popular : GET  /sort/most-popular/     (page 1)
+  //           GET  /sort/most-popular/2/   (page 2+)
+  //
+  // Pagination: div.pages ul li a[href]
+  //   href pattern: /sort/most-popular/2, /sort/most-popular/3 …
+  //   current page: div.pages ul li strong  (no href)
+
+  async function search(query, page) {
     let html;
     if (query && query.trim()) {
-      // Paginated search
       const pageSegment = page > 1 ? `${page}/` : '';
       html = await fetchText(`${BASE}/search/${pageSegment}`, {
         method: 'POST',
@@ -77,30 +139,11 @@
         body: `searchkey=${encodeURIComponent(query.trim())}`,
       });
     } else {
-      // Popular listing
-      const suffix = page > 1 ? `${page}.html` : '';
-      html = await fetchText(`${BASE}/most-popular/${suffix}`);
+      const pageSegment = page > 1 ? `${page}/` : '';
+      html = await fetchText(`${BASE}/sort/most-popular/${pageSegment}`);
     }
 
-    const root = parseHTML(html);
-    const items = root.querySelectorAll('.col-content .con .txt h3 a');
-
-    items.forEach(el => {
-      const href = el.getAttribute('href');
-      if (!href) return;
-      const url = absoluteUrl(href);
-      if (!url || seen.has(url)) return;
-      seen.add(url);
-      results.push({
-        id: novelIdFromUrl(href),
-        sourceId: 'en.freewebnovel',
-        title: el.text.trim(),
-        coverUrl: '',   // filled in getNovelDetail
-        url,
-      });
-    });
-
-    return results;
+    return parseListingCards(parseHTML(html));
   }
 
   async function getPopular(page) {
@@ -109,13 +152,15 @@
 
   // ─── NOVEL DETAIL ────────────────────────────────────────
   //
-  // Title   : h1.tit
-  // Cover   : .m-imgtxt img  [src]
-  // Author  : .m-imgtxt a[href*="/authors/"]
-  // Genres  : .m-imgtxt a[href*="/genre/"]
-  // Status  : .m-imgtxt i   (text "OnGoing" / "Completed")
-  // Summary : .m-desc p  (first paragraph, or full .m-desc text)
-  // Latest  : .m-nav li a[href*="chapter-"]  (first match)
+  // Verified selectors:
+  //   title       : h1.tit
+  //   cover       : .pic img
+  //   author      : .txt .item a.a1
+  //   genres      : .txt .item a[href*="/genre/"]
+  //   language    : em.e1 a  (or a[href*="english-novel"])
+  //   status      : .item .s1.s2 a   → "OnGoing" / "Completed"
+  //   description : .m-desc .inner
+  //   latest chs  : .m-newest1 .ul-list5 li a.con  (top 6)
 
   async function getNovelDetail(url) {
     const html = await fetchText(url);
@@ -123,33 +168,35 @@
 
     const title = root.querySelector('h1.tit')?.text.trim() ?? '';
 
-    const coverEl = root.querySelector('.m-imgtxt img');
+    const imgEl = root.querySelector('.pic img');
     const coverUrl = absoluteUrl(
-      coverEl?.getAttribute('src') ?? coverEl?.getAttribute('data-src') ?? ''
+      imgEl?.getAttribute('src') ?? imgEl?.getAttribute('data-src') ?? ''
     );
 
-    const author = root.querySelector('.m-imgtxt a[href*="/authors/"]')?.text.trim()
-      ?? root.querySelector('.m-imgtxt a[href*="/author/"]')?.text.trim()
-      ?? '';
+    const author = root.querySelector('.txt .item a.a1')?.text.trim() ?? '';
 
     const genres = root
-      .querySelectorAll('.m-imgtxt a[href*="/genre/"]')
+      .querySelectorAll('.txt .item a[href*="/genre/"]')
       .map(a => a.text.trim())
       .filter(Boolean);
 
-    const statusRaw = root.querySelector('.m-imgtxt i')?.text.trim().toLowerCase() ?? '';
-    const status = statusRaw.includes('ongoing') ? 'ongoing'
+    // Language
+    let language = 'en';
+    const langHref = root.querySelector('em.e1 a')?.getAttribute('href') ?? '';
+    if (langHref.includes('chinese')) language = 'zh';
+    else if (langHref.includes('korean')) language = 'ko';
+
+    // Status
+    const statusRaw = root.querySelector('.item .s1.s2 a')?.text.trim().toLowerCase() ?? '';
+    const status = statusRaw.includes('ongoing')  ? 'ongoing'
       : statusRaw.includes('complet') ? 'completed'
-      : statusRaw.includes('hiatus') ? 'hiatus'
+      : statusRaw.includes('hiatus')  ? 'hiatus'
       : 'unknown';
 
-    // Summary: prefer first <p> inside .m-desc, fall back to full text
-    const descEl = root.querySelector('.m-desc');
-    const firstP = descEl?.querySelector('p');
-    const description = (firstP?.text ?? descEl?.text ?? '').trim();
+    const description = root.querySelector('.m-desc .inner')?.text.trim() ?? '';
 
-    const latestEl = root.querySelector('.m-nav li a[href*="chapter-"]')
-      ?? root.querySelector('.m-nav a[href*="chapter-"]');
+    // Latest chapter (first of top-6 list)
+    const latestEl = root.querySelector('.m-newest1 .ul-list5 li a.con');
     const latestChapter = latestEl
       ? { title: latestEl.text.trim(), url: absoluteUrl(latestEl.getAttribute('href')) }
       : null;
@@ -162,6 +209,7 @@
       url,
       authors: author ? [author] : [],
       genres,
+      language,
       status,
       description,
       latestChapter,
@@ -170,19 +218,18 @@
 
   // ─── CHAPTER LIST ────────────────────────────────────────
   //
-  // Chapter links live in  #chapterlist a  or  .chapter-list a
-  // href pattern: /novel/<slug>/chapter-<n>.html
-  // Title text  : the anchor's text content
+  // All chapters are in the HTML already (hidden per group via display:none).
+  // Verified selector: .m-newest2 #idData li a.con
+  // No JS execution needed — all <li> tags present in source.
 
   async function getChapters(novelUrl) {
     const html = await fetchText(novelUrl);
     const root = parseHTML(html);
 
-    // Try multiple selectors — site may use either
-    let links = root.querySelectorAll('#chapterlist a[href*="chapter-"]');
-    if (!links.length) links = root.querySelectorAll('.chapter-list a[href*="chapter-"]');
-    if (!links.length) links = root.querySelectorAll('ul.chapter-list a');
-    if (!links.length) links = root.querySelectorAll('a[href*="chapter-"]');
+    let links = root.querySelectorAll('.m-newest2 #idData li a.con');
+    if (!links.length) links = root.querySelectorAll('.m-newest2 ul li a');
+    if (!links.length) links = root.querySelectorAll('#idData li a');
+    if (!links.length) links = root.querySelectorAll('a[href*="/chapter-"]');
 
     const chapters = [];
     const seen = new Set();
@@ -195,7 +242,6 @@
       const url = absoluteUrl(href);
       const numMatch = href.match(/chapter-([\d]+(?:\.\d+)?)/i);
       const number = numMatch ? parseFloat(numMatch[1]) : index + 1;
-      // stable id: novel-slug-chapter-N
       const id = href
         .replace(/^\//, '')
         .replace(/\//g, '-')
@@ -209,37 +255,65 @@
       });
     });
 
-    // Sort ascending by chapter number
     chapters.sort((a, b) => a.number - b.number);
     return chapters;
   }
 
   // ─── CHAPTER CONTENT ────────────────────────────────────
   //
-  // Content container: .chapter-content  or  #chapter-content  or  .content
-  // Paragraphs: <p> tags inside the container
+  // Verified selectors:
+  //   content container : div.txt #article
+  //   paragraphs        : p  (inside #article)
+  //   watermark tags    : subtxt  → strip before extracting text
+  //   prev chapter      : a#prev_url  — points to novel page when on chapter 1
+  //   next chapter      : a#next_url  — points to novel page when on last chapter
+  //
+  // Detection: if href contains "/novel/" but NOT "/chapter-" → boundary (first/last)
+
+  function isChapterUrl(href) {
+    return href && href.includes('/chapter-');
+  }
 
   async function getChapterContent(chapterUrl) {
     const html = await fetchText(chapterUrl);
     const root = parseHTML(html);
 
-    const container =
+    const article =
+      root.querySelector('div.txt #article') ??
+      root.querySelector('#article') ??
       root.querySelector('.chapter-content') ??
-      root.querySelector('#chapter-content') ??
-      root.querySelector('.reading-content') ??
-      root.querySelector('.content');
+      root.querySelector('#chapter-content');
 
-    if (!container) return [{ index: 0, text: '' }];
+    if (!article) return [{ index: 0, text: '' }];
 
-    const paras = container.querySelectorAll('p');
-    if (paras.length > 0) {
-      return paras
-        .map((p, i) => ({ index: i, text: p.text.trim() }))
-        .filter(p => p.text.length > 0);
-    }
+    // Strip watermark <subtxt> nodes — replace their raw HTML with empty string
+    // node-html-parser: use innerHTML manipulation to remove subtxt
+    const paras = article.querySelectorAll('p');
+    const result = [];
+    let idx = 0;
 
-    // Fallback: split raw text by newlines
-    return container.text
+    paras.forEach(p => {
+      // Remove all subtxt children by rebuilding text without them
+      let text = '';
+      p.childNodes.forEach(node => {
+        // TextNode has nodeType 3; element nodes have tagName
+        if (!node.tagName) {
+          // raw text node
+          text += node.text ?? '';
+        } else if (node.tagName.toLowerCase() !== 'subtxt') {
+          text += node.text ?? '';
+        }
+        // subtxt nodes are skipped entirely
+      });
+
+      text = text.trim();
+      if (text.length > 0) result.push({ index: idx++, text });
+    });
+
+    if (result.length > 0) return result;
+
+    // Fallback: strip subtxt via regex on raw text
+    return article.text
       .split('\n')
       .map(t => t.trim())
       .filter(t => t.length > 0)
@@ -252,7 +326,7 @@
     id: 'en.freewebnovel',
     name: 'FreeWebNovel',
     lang: 'en',
-    version: '4.0.2',
+    version: '9.2.0',
     baseUrl: BASE,
     iconUrl: `${BASE}/favicon.ico`,
     search,

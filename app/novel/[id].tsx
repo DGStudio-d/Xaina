@@ -159,23 +159,25 @@ export default function NovelDetailScreen() {
 
   // ── Download ───────────────────────────────────────────────────────────────
 
-  async function downloadChapter(chapter: DbChapter) {
-    if (getCachedContent(chapter.id)) {
-      setDlStates((s) => ({ ...s, [chapter.id]: "done" }));
-      return;
-    }
-    const ext = extensions.find((e) => e.id === chapter.sourceId);
-    if (!ext) return;
-
-    setDlStates((s) => ({ ...s, [chapter.id]: "downloading" }));
-    try {
-      const content = await ext.getChapterContent(chapter.url);
-      setCachedContent(chapter.id, JSON.stringify(content));
-      setDlStates((s) => ({ ...s, [chapter.id]: "done" }));
-    } catch {
-      setDlStates((s) => ({ ...s, [chapter.id]: "error" }));
-    }
-  }
+  const downloadChapter = useCallback(
+    async (chapter: DbChapter) => {
+      if (getCachedContent(chapter.id)) {
+        setDlStates((s) => ({ ...s, [chapter.id]: "done" }));
+        return;
+      }
+      const ext = extensions.find((e) => e.id === chapter.sourceId);
+      if (!ext) return;
+      setDlStates((s) => ({ ...s, [chapter.id]: "downloading" }));
+      try {
+        const content = await ext.getChapterContent(chapter.url);
+        setCachedContent(chapter.id, JSON.stringify(content));
+        setDlStates((s) => ({ ...s, [chapter.id]: "done" }));
+      } catch {
+        setDlStates((s) => ({ ...s, [chapter.id]: "error" }));
+      }
+    },
+    [extensions],
+  );
 
   async function downloadAll() {
     cancelRef.current = false;
@@ -194,17 +196,21 @@ export default function NovelDetailScreen() {
 
   // ── Computed ───────────────────────────────────────────────────────────────
 
-  const genres: string[] = (() => {
+  const genres = useMemo<string[]>(() => {
     try {
       return JSON.parse(novel?.genres ?? "[]");
     } catch {
       return [];
     }
-  })();
+  }, [novel?.genres]);
 
-  const downloadedCount =
-    Object.values(dlStates).filter((s) => s === "done").length +
-    chapters.filter((c) => !!getCachedContent(c.id) && !dlStates[c.id]).length;
+  const downloadedCount = useMemo(
+    () =>
+      Object.values(dlStates).filter((s) => s === "done").length +
+      chapters.filter((c) => !!getCachedContent(c.id) && !dlStates[c.id])
+        .length,
+    [dlStates, chapters],
+  );
 
   // ── Styles ─────────────────────────────────────────────────────────────────
 

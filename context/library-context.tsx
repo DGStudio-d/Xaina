@@ -1,13 +1,5 @@
-import {
-    FilterKey,
-    LibraryNovel,
-    SortKey
-} from "@/core/library/store";
-import React, {
-    createContext,
-    useContext,
-    useReducer
-} from "react";
+import { FilterKey, LibraryNovel, SortKey } from "@/core/library/store";
+import React, { createContext, useContext, useReducer } from "react";
 
 // ─── State shape ──────────────────────────────────────────────────────────────
 
@@ -78,9 +70,12 @@ const LibraryDispatchContext =
 export function LibraryProvider({ children }: { children: React.ReactNode }) {
   const [state, dispatch] = useReducer(libraryReducer, initialState);
 
+  // Memoize dispatch — it's stable from useReducer but wrap for safety
+  const stableDispatch = useMemo(() => dispatch, []);
+
   return (
     <LibraryContext.Provider value={state}>
-      <LibraryDispatchContext.Provider value={dispatch}>
+      <LibraryDispatchContext.Provider value={stableDispatch}>
         {children}
       </LibraryDispatchContext.Provider>
     </LibraryContext.Provider>

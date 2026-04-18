@@ -72,6 +72,15 @@ export function initDb() {
       key   TEXT PRIMARY KEY,
       value TEXT NOT NULL
     );
+
+    -- ── Indexes ───────────────────────────────────────────────────────────────
+    CREATE INDEX IF NOT EXISTS idx_novels_inLibrary   ON novels(inLibrary);
+    CREATE INDEX IF NOT EXISTS idx_novels_lastReadAt  ON novels(lastReadAt DESC);
+    CREATE INDEX IF NOT EXISTS idx_novels_addedAt     ON novels(addedAt DESC);
+    CREATE INDEX IF NOT EXISTS idx_novels_favorite    ON novels(favorite);
+    CREATE INDEX IF NOT EXISTS idx_chapters_novelId   ON chapters(novelId);
+    CREATE INDEX IF NOT EXISTS idx_chapters_read      ON chapters(novelId, read);
+    CREATE INDEX IF NOT EXISTS idx_chapter_cache      ON chapter_cache(chapterId);
   `);
 }
 
