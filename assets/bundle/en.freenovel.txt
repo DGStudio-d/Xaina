@@ -9,9 +9,6 @@
 
   async function fetchText(url, options = {}, retries = 2) {
     try {
-      const controller = new AbortController();
-      const timeout = setTimeout(() => controller.abort(), 15000); // 15s timeout
-
       const res = await fetch(url, {
         method: options.method || 'GET',
         headers: {
@@ -22,10 +19,7 @@
           ...(options.headers || {}),
         },
         body: options.body,
-        signal: controller.signal,
       });
-
-      clearTimeout(timeout);
 
       if ((res.status === 403 || res.status === 503) && retries > 0) {
         await sleep(1500);
@@ -326,7 +320,7 @@
     id: 'en.freewebnovel',
     name: 'FreeWebNovel',
     lang: 'en',
-    version: '9.2.0',
+    version: '9.3.0',
     baseUrl: BASE,
     iconUrl: `${BASE}/favicon.ico`,
     search,

@@ -21,7 +21,6 @@ import type {
     SearchFilter,
 } from "@/core/extension/types";
 import { Extension } from "@/core/extension/types";
-import parse from "node-html-parser";
 
 /**
  * The API object a bundle must pass to __xaina_register().
@@ -97,45 +96,38 @@ class DynamicExtension extends Extension {
 /**
  * Executes a bundle string and returns an Extension instance.
  *
+ * Uses eval() instead of new Function() for Hermes compatibility.
+ * Hermes (used in React Native release builds) does not support new Function(),
+ * but does support eval(). Sandbox globals are injected as local variables
+ * via a wrapping IIFE so the bundle's 'use strict' scope sees them.
+ *
  * The bundle must call:
  *   __xaina_register({ id, name, lang, version, baseUrl, search, getNovelDetail, getChapters, getChapterContent })
  */
 export function runBundle(source: string): Extension {
   let registered: BundleAPI | null = null;
 
-  // Sandbox: only expose what the bundle needs
-  const sandbox = {
-    __xaina_register: (api: BundleAPI) => {
-      registered = api;
-    },
-    fetch, // native fetch
-    console,
-    setTimeout,
-    clearTimeout,
-    Promise,
-    JSON,
-    URL,
-    URLSearchParams,
-    encodeURIComponent,
-    decodeURIComponent,
-    parseFloat,
-    parseInt,
-    String,
-    Array,
-    Object,
-    Math,
-    Date,
-    Error,
-    parse,
+  const __xaina_register = (api: BundleAPI) => {
+    registered = api;
   };
 
-  // Build a function with sandbox keys as parameters
-  const keys = Object.keys(sandbox);
-  const vals = Object.values(sandbox);
+  // Wrap the bundle in an IIFE that receives sandbox values as parameters.
+  // This avoids new Function() while still giving the bundle a clean scope.
+  // eval() is supported by Hermes in both debug and release builds.
+  const wrapped = `(function(
+    __xaina_register, fetch, console, setTimeout, clearTimeout,
+    Promise, JSON, URL, URLSearchParams,
+    encodeURIComponent, decodeURIComponent,
+    parseFloat, parseInt, String, Array, Object, Math, Date, Error, parse
+  ) { "use strict";\n${source}\n})(
+    __xaina_register, fetch, console, setTimeout, clearTimeout,
+    Promise, JSON, URL, URLSearchParams,
+    encodeURIComponent, decodeURIComponent,
+    parseFloat, parseInt, String, Array, Object, Math, Date, Error, parse
+  );`;
 
-  // eslint-disable-next-line no-new-func
-  const fn = new Function(...keys, `"use strict";\n${source}`);
-  fn(...vals);
+  // eslint-disable-next-line no-eval
+  eval(wrapped);
 
   if (!registered) {
     throw new Error("Bundle did not call __xaina_register()");
