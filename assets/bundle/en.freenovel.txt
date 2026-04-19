@@ -331,7 +331,7 @@
     id: 'en.freewebnovel',
     name: 'FreeWebNovel',
     lang: 'en',
-    version: '10.0.0',
+    version: '10.1.0',
     baseUrl: BASE,
     iconUrl: `${BASE}/favicon.ico`,
     search,

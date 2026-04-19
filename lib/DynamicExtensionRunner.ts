@@ -16,7 +16,11 @@ import type {
   SearchFilter,
 } from "@/core/extension/types";
 import { Extension } from "@/core/extension/types";
-import parse from "node-html-parser";
+import { parse } from "node-html-parser";
+
+// Expose parse on globalThis permanently so eval()'d bundle code can call it
+// at any time (including inside async functions called after eval returns).
+(globalThis as any).parse = parse;
 
 // ─── Bundle API ───────────────────────────────────────────────────────────────
 
@@ -99,30 +103,21 @@ class DynamicExtension extends Extension {
 export function runBundle(source: string): Extension {
   let registered: BundleAPI | null = null;
 
-  // Unique key avoids collisions if runBundle is called concurrently
+  // Unique key per call to avoid collisions
   const regKey = `__xr_${Date.now()}_${Math.random().toString(36).slice(2)}`;
 
-  // Expose register callback globally (eval can't see outer locals in Hermes)
+  // Expose register callback on globalThis — eval() cannot see outer locals
   (globalThis as any)[regKey] = (api: BundleAPI) => {
     registered = api;
   };
 
-  // Expose parse globally so the bundle's parseHTML() works
-  const prevParse = (globalThis as any).parse;
-  (globalThis as any).parse = parse;
-
   try {
-    // Replace __xaina_register( with our keyed version
     const patched = source.replace(/__xaina_register\s*\(/g, `${regKey}(`);
     // eslint-disable-next-line no-eval
     eval(patched);
   } finally {
+    // Only clean up the register key — parse stays on globalThis permanently
     delete (globalThis as any)[regKey];
-    if (prevParse !== undefined) {
-      (globalThis as any).parse = prevParse;
-    } else {
-      delete (globalThis as any).parse;
-    }
   }
 
   if (!registered) {

@@ -19,7 +19,7 @@ import {
 import { Ionicons } from "@expo/vector-icons";
 import { Image } from "expo-image";
 import { useLocalSearchParams, useRouter } from "expo-router";
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
     ActivityIndicator,
     Alert,
@@ -198,7 +198,9 @@ export default function NovelDetailScreen() {
 
   const genres = useMemo<string[]>(() => {
     try {
-      return JSON.parse(novel?.genres ?? "[]");
+      const parsed = JSON.parse(novel?.genres ?? "[]");
+      // Deduplicate in case the scraper returned duplicates
+      return [...new Set<string>(parsed)];
     } catch {
       return [];
     }
@@ -542,8 +544,8 @@ export default function NovelDetailScreen() {
                 showsHorizontalScrollIndicator={false}
                 style={s.genreRow}
               >
-                {genres.map((g) => (
-                  <View key={g} style={s.genre}>
+                {genres.map((g, i) => (
+                  <View key={`${g}-${i}`} style={s.genre}>
                     <Text style={s.genreText}>{g}</Text>
                   </View>
                 ))}
